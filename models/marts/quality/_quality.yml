@@ -103,6 +103,10 @@ models:
         description: Rows referencing an account_id not in the account master.
       - name: rejected_unparseable
         description: Rows whose key numeric fields could not be cast.
+      - name: rejected_outside_reporting_window
+        description: >
+          Rows dated outside the reporting window (e.g. January payments settling December
+          statements, post-window recoveries). Excluded, not corrupt - the extract is pulled after period close.
       - name: rejected_rows_total
         description: Sum of all rejected_* columns.
       - name: staged_rows
@@ -122,7 +126,8 @@ models:
     description: >
       **Grain: source table x data-quality check.** How staging handled each defect class in
       the current load - rejected (duplicates, superseded restatements, non-positive amounts,
-      orphans), imputed (null FICO refresh) or accepted-and-flagged (late arriving).
+      orphans), excluded (dated outside the reporting window), imputed (null FICO refresh) or
+      accepted-and-flagged (late arriving).
     columns:
       - name: source_table
         description: Raw extract the check applies to.

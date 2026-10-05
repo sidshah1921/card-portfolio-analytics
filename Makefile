@@ -2,7 +2,10 @@ PYTHON   ?= .venv/bin/python
 DBT      ?= .venv/bin/dbt
 ACCOUNTS ?= 50000
 MONTHS   ?= 36
+START    ?= 2023-01
 SEED     ?= 42
+# The reporting-window contract passed to dbt always matches the generated data.
+DBT_VARS := --vars '{reporting_window_start: "$(START)-01", reporting_window_months: $(MONTHS)}'
 export DBT_PROFILES_DIR := $(CURDIR)
 
 .PHONY: all setup data build docs export metrics clean
@@ -15,11 +18,11 @@ setup:                          ## create the virtualenv and install dependencie
 	$(PYTHON) -m pip install -r requirements.txt
 
 data:                           ## generate synthetic raw CSVs into data/raw/
-	$(PYTHON) scripts/generate_data.py --accounts $(ACCOUNTS) --months $(MONTHS) --seed $(SEED)
+	$(PYTHON) scripts/generate_data.py --accounts $(ACCOUNTS) --months $(MONTHS) --start $(START) --seed $(SEED)
 
 build:                          ## dbt seed + run + test (dbt build), then generate docs
-	$(DBT) build
-	$(DBT) docs generate
+	$(DBT) build $(DBT_VARS)
+	$(DBT) docs generate $(DBT_VARS)
 
 docs: build                     ## serve dbt docs locally
 	$(DBT) docs serve
@@ -28,7 +31,7 @@ export:                         ## export every mart to data/exports/*.csv for T
 	$(PYTHON) scripts/export_for_tableau.py
 
 metrics:                        ## run example MetricFlow queries -> docs/metric_examples.md
-	$(DBT) parse --quiet
+	$(DBT) parse --quiet $(DBT_VARS)
 	$(PYTHON) scripts/metric_examples.py
 
 clean:

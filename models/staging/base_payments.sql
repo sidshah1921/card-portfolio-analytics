@@ -27,6 +27,9 @@ select
         when v.amount is null then 'unparseable'
         when v.amount <= 0 then 'non_positive_amount'
         when a.account_id is null then 'orphan_account'
+        -- the extract is pulled after period close, so it carries activity dated past the window
+        when v.payment_date not between {{ reporting_window_start() }} and {{ reporting_window_end() }}
+            then 'outside_reporting_window'
         when v.delivery_rank > 1 then 'duplicate_payment_id'
         else 'valid'
     end as dq_status

@@ -24,7 +24,7 @@ EXPORTS: dict[str, str] = {
     "mart_dq_history": "select * from marts.mart_dq_history order by run_ts",
     "mart_pipeline_reconciliation": "select * from marts.mart_pipeline_reconciliation order by entity",
     "dim_product": "select * from marts.dim_product order by product_name",
-    "dim_date_monthly": "select * from marts.dim_date where is_month_start order by date_day",
+    "dim_date_monthly": "select * from marts.dim_date where is_month_start and is_in_reporting_window order by date_day",
 }
 
 

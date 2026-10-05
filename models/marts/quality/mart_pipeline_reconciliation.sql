@@ -10,6 +10,7 @@ with statements as (
         0                                                               as rejected_non_positive_amount,
         count(*) filter (where dq_status = 'orphan_account')            as rejected_orphan_account,
         count(*) filter (where dq_status = 'unparseable')               as rejected_unparseable,
+        count(*) filter (where dq_status = 'outside_reporting_window')  as rejected_outside_reporting_window,
         count(*) filter (where dq_status = 'valid' and fico_refresh is null) as imputed_rows,
         count(*) filter (where dq_status = 'valid' and is_late_arriving)     as late_arriving_rows
     from {{ ref('base_statements') }}
@@ -25,6 +26,7 @@ payments as (
         count(*) filter (where dq_status = 'non_positive_amount'),
         count(*) filter (where dq_status = 'orphan_account'),
         count(*) filter (where dq_status = 'unparseable'),
+        count(*) filter (where dq_status = 'outside_reporting_window'),
         0,
         count(*) filter (where dq_status = 'valid' and is_late_arriving)
     from {{ ref('base_payments') }}
@@ -34,11 +36,11 @@ payments as (
 masters as (
     select 'accounts', (select count(*) from {{ source('raw', 'raw_accounts') }}) as raw_rows,
            0, 0, (select count(*) from {{ source('raw', 'raw_accounts') }}) - (select count(*) from {{ ref('stg_accounts') }}),
-           0, 0, 0, 0, 0
+           0, 0, 0, 0, 0, 0
     union all
     select 'customers', (select count(*) from {{ source('raw', 'raw_customers') }}),
            0, 0, (select count(*) from {{ source('raw', 'raw_customers') }}) - (select count(*) from {{ ref('stg_customers') }}),
-           0, 0, 0, 0, 0
+           0, 0, 0, 0, 0, 0
 ),
 
 raw_side as (
@@ -72,8 +74,10 @@ select
     r.rejected_non_positive_amount,
     r.rejected_orphan_account,
     r.rejected_unparseable,
+    r.rejected_outside_reporting_window,
     r.rejected_exact_duplicate + r.rejected_superseded_restatement + r.rejected_duplicate_id
         + r.rejected_non_positive_amount + r.rejected_orphan_account + r.rejected_unparseable
+        + r.rejected_outside_reporting_window
                                                     as rejected_rows_total,
     d.staged_rows,
     d.mart_model,

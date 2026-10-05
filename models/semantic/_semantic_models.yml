@@ -35,32 +35,55 @@ semantic_models:
       - name: utilization_band
         type: categorical
     measures:
+      # Stock measures (point-in-time balances / counts) are semi-additive: they add across
+      # accounts and products but not across time. At a coarser grain than month MetricFlow
+      # returns the value for the last month in the period (window_choice: max).
       - name: active_account_count
-        description: Open, non-charged-off account months.
+        description: Open, non-charged-off accounts (stock; end-of-period at coarser grains).
         agg: sum
         expr: case when is_active then 1 else 0 end
+        non_additive_dimension:
+          name: statement_month
+          window_choice: max
       - name: dpd30_plus_account_count
-        description: Account months 30-179 DPD.
+        description: Accounts 30-179 DPD (stock; end-of-period at coarser grains).
         agg: sum
         expr: case when is_30plus then 1 else 0 end
+        non_additive_dimension:
+          name: statement_month
+          window_choice: max
       - name: active_balance
-        description: Balance of active account months.
+        description: Outstanding balance of active accounts (stock; end-of-period at coarser grains).
         agg: sum
         expr: case when is_active then balance else 0 end
+        non_additive_dimension:
+          name: statement_month
+          window_choice: max
       - name: active_credit_limit
-        description: Credit limit of active account months.
+        description: Credit limit of active accounts (stock; end-of-period at coarser grains).
         agg: sum
         expr: case when is_active then credit_limit else 0 end
+        non_additive_dimension:
+          name: statement_month
+          window_choice: max
+
+      # Flow / event measures are fully additive across time.
+      - name: active_balance_months
+        description: >
+          Sum of monthly active balances (balance-months). Additive by design - dividing a flow by
+          it gives a rate per average balance per month, which annualizes correctly at any grain.
+        agg: sum
+        expr: case when is_active then balance else 0 end
       - name: roll_forward_count
-        description: Account months whose bucket worsened vs the prior month.
+        description: Month-over-month transitions where the bucket worsened (flow).
         agg: sum
         expr: case when is_roll_forward then 1 else 0 end
       - name: roll_eligible_count
-        description: Account months with a prior-month observation.
+        description: Month-over-month transitions observed, i.e. accounts with a prior month (flow).
         agg: sum
         expr: case when has_prior_month then 1 else 0 end
       - name: gross_charge_off_amount
-        description: Balances written off at 180 DPD.
+        description: Balances written off at 180 DPD (flow).
         agg: sum
 
   - name: payment
@@ -84,7 +107,7 @@ semantic_models:
         type: categorical
     measures:
       - name: recovery_amount
-        description: Payments received after charge-off.
+        description: Payments received after charge-off (flow).
         agg: sum
         expr: case when payment_type = 'Recovery' then amount else 0 end
 
@@ -92,15 +115,18 @@ metrics:
   # ---------------------------------------------------------------- headline metrics
   - name: active_accounts
     label: Active accounts
-    description: Number of open, non-charged-off accounts with a statement in the period.
+    description: >
+      Number of open, non-charged-off accounts. Semi-additive - at quarter/year grain it returns
+      the count for the last month of the period, never a sum of months.
     type: simple
     type_params:
       measure: active_account_count
     config:
       meta:
         owner: Credit Risk Analytics
-        formula: "COUNT(account months WHERE delinquency_bucket <> 'CO')"
-        grain: account x month (sum over accounts; take a single month, do not sum across months)
+        formula: "COUNT(accounts WHERE delinquency_bucket <> 'CO'), last month of period"
+        grain: account x month
+        additivity: semi-additive (stock)
 
   - name: delinquency_rate_30plus
     label: 30+ DPD delinquency rate
@@ -115,8 +141,9 @@ metrics:
     config:
       meta:
         owner: Credit Risk Analytics
-        formula: "COUNT(active accounts with 30 <= DPD < 180) / COUNT(active accounts)"
+        formula: "COUNT(active accounts with 30 <= DPD < 180) / COUNT(active accounts), last month of period"
         grain: account x month
+        additivity: ratio of semi-additive stocks (end-of-period rate)
 
   - name: utilization_rate
     label: Utilization rate
@@ -128,8 +155,9 @@ metrics:
     config:
       meta:
         owner: Portfolio Management
-        formula: "SUM(balance) / SUM(credit_limit), active accounts"
+        formula: "SUM(balance) / SUM(credit_limit), active accounts, last month of period"
         grain: account x month
+        additivity: ratio of semi-additive stocks (end-of-period rate)
 
   - name: roll_rate
     label: Roll rate (forward)
@@ -147,22 +175,27 @@ metrics:
         owner: Credit Risk Analytics
         formula: "COUNT(bucket rank(t) > bucket rank(t-1)) / COUNT(accounts with a row in t-1)"
         grain: account x month transition
+        additivity: ratio of additive flows (average monthly roll rate over the period)
 
   - name: net_charge_off_rate
     label: Net charge-off rate (annualized)
-    description: Gross charge-offs less recoveries in the month, annualized, over outstanding receivables.
+    description: >
+      Gross charge-offs less recoveries over the period, annualized, divided by average
+      receivables. Using balance-months as the denominator makes the annualization correct at any
+      grain: 12 * NCO / SUM(monthly balances) = (NCO / months) * 12 / average balance.
     type: derived
     type_params:
-      expr: (gross_charge_offs - recoveries) * 12 / receivables
+      expr: (gross_charge_offs - recoveries) * 12 / receivable_balance_months
       metrics:
         - name: gross_charge_offs
         - name: recoveries
-        - name: receivables
+        - name: receivable_balance_months
     config:
       meta:
         owner: Finance - Credit Loss Reporting
-        formula: "12 * (SUM(gross charge-off $) - SUM(recoveries $)) / SUM(active balance)"
-        grain: month (portfolio or product)
+        formula: "12 * (SUM(gross charge-off $) - SUM(recoveries $)) / SUM(monthly active balance)"
+        grain: month or coarser (portfolio or product)
+        additivity: ratio of additive flows
 
   # ------------------------------------------------------- component metrics
   - name: dpd30_plus_accounts
@@ -172,16 +205,25 @@ metrics:
     type_params:
       measure: dpd30_plus_account_count
     config:
-      meta: {owner: Credit Risk Analytics, formula: "COUNT(30 <= DPD < 180)", grain: account x month}
+      meta: {owner: Credit Risk Analytics, formula: "COUNT(30 <= DPD < 180), last month of period", grain: account x month, additivity: semi-additive (stock)}
 
   - name: receivables
     label: Receivables
-    description: Outstanding balance of active accounts.
+    description: Outstanding balance of active accounts (end of period).
     type: simple
     type_params:
       measure: active_balance
     config:
-      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(balance), active accounts", grain: account x month}
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(balance), active accounts, last month of period", grain: account x month, additivity: semi-additive (stock)}
+
+  - name: receivable_balance_months
+    label: Receivable balance-months
+    description: Sum of monthly active balances over the period (= average receivables x months). NCO denominator.
+    type: simple
+    type_params:
+      measure: active_balance_months
+    config:
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM over months of SUM(balance), active accounts", grain: account x month, additivity: additive}
 
   - name: credit_lines
     label: Credit lines
@@ -190,7 +232,7 @@ metrics:
     type_params:
       measure: active_credit_limit
     config:
-      meta: {owner: Portfolio Management, formula: "SUM(credit_limit), active accounts", grain: account x month}
+      meta: {owner: Portfolio Management, formula: "SUM(credit_limit), active accounts, last month of period", grain: account x month, additivity: semi-additive (stock)}
 
   - name: roll_forward_accounts
     label: Roll-forward accounts
@@ -199,7 +241,7 @@ metrics:
     type_params:
       measure: roll_forward_count
     config:
-      meta: {owner: Credit Risk Analytics, formula: "COUNT(bucket rank increased)", grain: account x month}
+      meta: {owner: Credit Risk Analytics, formula: "COUNT(bucket rank increased)", grain: account x month, additivity: additive}
 
   - name: roll_eligible_accounts
     label: Roll-eligible accounts
@@ -208,7 +250,7 @@ metrics:
     type_params:
       measure: roll_eligible_count
     config:
-      meta: {owner: Credit Risk Analytics, formula: "COUNT(has prior month)", grain: account x month}
+      meta: {owner: Credit Risk Analytics, formula: "COUNT(has prior month)", grain: account x month, additivity: additive}
 
   - name: gross_charge_offs
     label: Gross charge-offs
@@ -217,7 +259,7 @@ metrics:
     type_params:
       measure: gross_charge_off_amount
     config:
-      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(balance at 180 DPD)", grain: account x month}
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(balance at 180 DPD)", grain: account x month, additivity: additive}
 
   - name: recoveries
     label: Recoveries
@@ -226,4 +268,4 @@ metrics:
     type_params:
       measure: recovery_amount
     config:
-      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(post-charge-off payments)", grain: payment}
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(post-charge-off payments)", grain: payment, additivity: additive}

@@ -10,7 +10,8 @@ payments as (
 ),
 
 checks as (
-    select 'raw_statements' as source_table, dq_status as dq_check, 'rejected' as action, count(*) as affected_rows
+    select 'raw_statements' as source_table, dq_status as dq_check,
+           {{ rejection_action('dq_status') }} as action, count(*) as affected_rows
     from statements where dq_status <> 'valid' group by all
     union all
     select 'raw_statements', 'null_fico_refresh', 'imputed (forward-fill)', count(*)
@@ -19,7 +20,7 @@ checks as (
     select 'raw_statements', 'late_arriving', 'accepted (flagged)', count(*)
     from statements where dq_status = 'valid' and is_late_arriving
     union all
-    select 'raw_payments', dq_status, 'rejected', count(*)
+    select 'raw_payments', dq_status, {{ rejection_action('dq_status') }}, count(*)
     from payments where dq_status <> 'valid' group by all
     union all
     select 'raw_payments', 'late_arriving', 'accepted (flagged)', count(*)

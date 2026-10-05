@@ -16,5 +16,7 @@ select
     dayofweek(date_day)                                as day_of_week,
     date_day = date_trunc('month', date_day)           as is_month_start,
     date_day = last_day(date_day)                      as is_month_end,
-    quarter(date_day) = 4                              as is_holiday_quarter
+    quarter(date_day) = 4                              as is_holiday_quarter,
+    date_day between {{ reporting_window_start() }} and {{ reporting_window_end() }}
+                                                       as is_in_reporting_window
 from days

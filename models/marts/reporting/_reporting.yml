@@ -14,12 +14,13 @@ models:
     columns:
       - name: transition_month
         description: Month the account landed in to_bucket.
-        data_tests: [not_null]
+        data_tests: [not_null, within_reporting_window]
       - name: from_month
         description: Prior month (transition_month - 1 month).
         data_tests:
           - expression_is_true:
               arguments: {expression: "from_month = cast(transition_month - interval 1 month as date)"}
+          - within_reporting_window
       - name: product_name
         description: Card product.
         data_tests:
@@ -74,6 +75,7 @@ models:
         data_tests: [not_null]
       - name: vintage_quarter_start
         description: First day of the origination quarter.
+        data_tests: [within_reporting_window]
       - name: product_name
         description: Card product.
       - name: months_on_book
@@ -128,7 +130,7 @@ models:
     columns:
       - name: observation_month
         description: Month the Current-account snapshot is taken.
-        data_tests: [not_null]
+        data_tests: [not_null, within_reporting_window]
       - name: product_name
         description: Card product.
       - name: fico_band
@@ -172,7 +174,7 @@ models:
     columns:
       - name: statement_month
         description: Statement month (first day). Joins to dim_date.date_day.
-        data_tests: [not_null]
+        data_tests: [not_null, within_reporting_window]
       - name: product_name
         description: Card product.
         data_tests:

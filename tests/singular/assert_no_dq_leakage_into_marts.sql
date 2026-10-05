@@ -5,7 +5,7 @@ with rejected_payments_in_mart as (
     from {{ ref('fct_payments') }} as f
     inner join {{ ref('base_payments') }} as b
         on f.payment_id = b.payment_id
-    where b.dq_status in ('non_positive_amount', 'orphan_account')
+    where b.dq_status in ('non_positive_amount', 'orphan_account', 'outside_reporting_window')
 ),
 
 statement_row_count as (

@@ -12,6 +12,9 @@ clean-targets: ["target", "dbt_packages", "logs"]
 
 vars:
   raw_data_path: "data/raw"
+  # Reporting window contract (must match the generator's --start / --months).
+  reporting_window_start: "2023-01-01"
+  reporting_window_months: 36
   # Utilization at or above this level is treated as "high utilization" in reporting.
   high_utilization_threshold: 0.70
 

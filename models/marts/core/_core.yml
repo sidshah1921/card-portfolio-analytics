@@ -40,6 +40,10 @@ models:
         description: True on the last day of a month.
       - name: is_holiday_quarter
         description: True for Q4 (Oct-Dec), the seasonal spend peak.
+      - name: is_in_reporting_window
+        description: >
+          True for days inside the reporting window contract (vars reporting_window_start /
+          reporting_window_months; default Jan 2023 - Dec 2025). Every fact and mart date is tested against it.
 
   - name: dim_product
     description: One row per card product, with catalog attributes and booked-account summary.
@@ -146,16 +150,21 @@ models:
       - name: is_subprime_at_origination
         description: True when fico_at_origination < 620.
       - name: account_status
-        description: Open, or Charged Off once the account reaches 180 DPD.
+        description: >
+          Open; Charged Off once the account reaches 180 DPD; or Inactive before window when the
+          account master still carries an account with no statements in the reporting window
+          (charged off or closed before it started).
         data_tests:
           - accepted_values:
-              arguments: {values: ["Open", "Charged Off"]}
+              arguments: {values: ["Open", "Charged Off", "Inactive before window"]}
       - name: first_statement_month
         description: First statement month observed in the reporting window.
       - name: last_statement_month
         description: Last statement month observed (the charge-off month for charged-off accounts).
       - name: charge_off_month
         description: Statement month in which the account charged off (null if open).
+        data_tests:
+          - within_reporting_window
       - name: charge_off_amount
         description: Balance written off at charge-off (0 if open).
       - name: ever_30plus
@@ -203,6 +212,7 @@ models:
           - not_null
           - relationships:
               arguments: {to: ref('dim_date'), field: date_day}
+          - within_reporting_window
           - no_gaps_in_months:
               arguments: {partition_by: account_id}
       - name: months_on_book
@@ -307,11 +317,17 @@ models:
         description: Card product.
       - name: payment_date
         description: Date the payment posted.
-        data_tests: [not_null]
+        data_tests:
+          - not_null
+          - within_reporting_window
       - name: payment_month
         description: First day of the posting month.
+        data_tests:
+          - within_reporting_window
       - name: cycle_statement_month
         description: Statement month the payment settles (the month before payment_month).
+        data_tests:
+          - within_reporting_window
       - name: amount
         description: Payment amount in USD (always positive).
         data_tests:

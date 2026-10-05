@@ -53,14 +53,15 @@ models:
   - name: base_statements
     description: >
       Every raw statement record, typed and labelled with a dq_status
-      (valid / exact_duplicate / superseded_restatement / orphan_account / unparseable).
+      (valid / exact_duplicate / superseded_restatement / orphan_account / unparseable /
+      outside_reporting_window).
       Latest load wins for each account x month.
     columns:
       - name: dq_status
         data_tests:
           - not_null
           - accepted_values:
-              arguments: {values: ["valid", "exact_duplicate", "superseded_restatement", "orphan_account", "unparseable"]}
+              arguments: {values: ["valid", "exact_duplicate", "superseded_restatement", "orphan_account", "unparseable", "outside_reporting_window"]}
 
   - name: stg_statements
     description: >
@@ -104,15 +105,18 @@ models:
   - name: base_payments
     description: >
       Every raw payment record, typed and labelled with a dq_status
-      (valid / non_positive_amount / orphan_account / duplicate_payment_id / unparseable).
+      (valid / non_positive_amount / orphan_account / outside_reporting_window / duplicate_payment_id /
+      unparseable).
     columns:
       - name: dq_status
         data_tests:
           - accepted_values:
-              arguments: {values: ["valid", "non_positive_amount", "orphan_account", "duplicate_payment_id", "unparseable"]}
+              arguments: {values: ["valid", "non_positive_amount", "orphan_account", "outside_reporting_window", "duplicate_payment_id", "unparseable"]}
 
   - name: stg_payments
-    description: Clean payments - positive amounts, known accounts, one row per payment_id.
+    description: >
+      Clean payments - positive amounts, known accounts, dated inside the reporting window,
+      one row per payment_id.
     columns:
       - name: payment_id
         data_tests: [unique, not_null]

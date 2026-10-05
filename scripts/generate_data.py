@@ -364,8 +364,9 @@ def simulate(n_accounts: int, n_months: int, start: str, seed: int) -> dict[str,
     pay_date = month_start(base, p_m[rep] + 1) + rng.integers(0, 28, len(rep)).astype("timedelta64[D]")
     cycle_payments = pd.DataFrame({"acct": p_acct[rep], "payment_date": pay_date, "amount": amt})
 
-    # Post-charge-off recoveries.
-    co_accts = np.flatnonzero(charged_off & (co_month >= -2))
+    # Post-charge-off recoveries, only for charge-offs inside the reporting window (a recovery
+    # cannot be attributed to a charge-off the extract never reports).
+    co_accts = np.flatnonzero(charged_off & (co_month >= 0))
     recovering = co_accts[rng.random(len(co_accts)) < 0.35]
     n_rec = rng.integers(1, 7, len(recovering))
     rec_rep = np.repeat(np.arange(len(recovering)), n_rec)

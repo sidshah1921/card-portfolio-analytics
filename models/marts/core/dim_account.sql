@@ -30,7 +30,11 @@ select
     a.fico_at_origination,
     {{ fico_band('a.fico_at_origination') }}                  as fico_band_at_origination,
     a.fico_at_origination < 620                               as is_subprime_at_origination,
-    case when h.charge_off_month is not null then 'Charged Off' else 'Open' end as account_status,
+    case
+        when h.account_id is null then 'Inactive before window'  -- no statements in the reporting window
+        when h.charge_off_month is not null then 'Charged Off'
+        else 'Open'
+    end                                                       as account_status,
     h.first_statement_month,
     h.last_statement_month,
     h.charge_off_month,

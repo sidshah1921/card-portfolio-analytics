@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import subprocess
+import tempfile
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +18,7 @@ EXAMPLES = [
         [
             "--metrics", "delinquency_rate_30plus",
             "--group-by", "metric_time__month,account_month__product_name",
-            "--start-time", "2025-01-01",
+            "--start-time", "2025-01-01",  # brevity only: 48 rows instead of 144
             "--order", "metric_time__month,account_month__product_name",
         ],
     ),
@@ -30,16 +32,52 @@ EXAMPLES = [
         ],
     ),
     (
-        "Monthly portfolio scorecard (2025): active accounts, utilization, annualized net charge-off rate",
+        "Quarterly portfolio scorecard: active accounts and utilization (end of quarter), "
+        "annualized net charge-off rate (over the quarter)",
         [
             "--metrics", "active_accounts,utilization_rate,net_charge_off_rate",
-            "--group-by", "metric_time__month",
-            "--start-time", "2025-01-01",
-            "--end-time", "2025-12-31",
-            "--order", "metric_time__month",
+            "--group-by", "metric_time__quarter",
+            "--order", "metric_time__quarter",
         ],
     ),
 ]
+
+
+def mf_csv(args: list[str], path: Path) -> list[dict[str, str]]:
+    result = subprocess.run([MF, "query", *args, "--csv", str(path), "--quiet"], capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"mf query failed: {' '.join(args)}\n{result.stdout}\n{result.stderr}")
+    with path.open() as f:
+        return list(csv.DictReader(f))
+
+
+def semi_additive_check(tmp: Path) -> list[str]:
+    """active_accounts at quarter grain must equal the last month of the quarter, not the sum."""
+    monthly = mf_csv(["--metrics", "active_accounts", "--group-by", "metric_time__month"], tmp / "m.csv")
+    quarterly = mf_csv(["--metrics", "active_accounts", "--group-by", "metric_time__quarter"], tmp / "q.csv")
+    by_month = {r["metric_time__month"][:10]: int(float(r["active_accounts"])) for r in monthly}
+    q4 = next(int(float(r["active_accounts"])) for r in quarterly if r["metric_time__quarter"].startswith("2025-10-01"))
+    dec = by_month["2025-12-01"]
+    q4_sum = sum(by_month[m] for m in ("2025-10-01", "2025-11-01", "2025-12-01"))
+    if q4 != dec:
+        sys.exit(f"Semi-additivity check FAILED: Q4 2025 active_accounts {q4:,} != Dec 2025 {dec:,}")
+    print(f"  ok: Q4 2025 active_accounts {q4:,} == Dec 2025 {dec:,}")
+    return [
+        "",
+        "## Semi-additivity check",
+        "",
+        "`active_accounts` is a stock, so its measure is semi-additive over `statement_month` "
+        "(`non_additive_dimension`, `window_choice: max`). At quarter grain it must return the "
+        "last month's count, not the sum of three months.",
+        "",
+        "| | active_accounts |",
+        "|---|---|",
+        f"| Q4 2025 (quarter grain) | {q4:,} |",
+        f"| Dec 2025 (month grain) | {dec:,} |",
+        f"| Oct + Nov + Dec 2025 (what a naive sum would return) | {q4_sum:,} |",
+        "",
+        f"Result: **{'PASS' if q4 == dec else 'FAIL'}** - Q4 2025 equals December 2025.",
+    ]
 
 
 def main() -> None:
@@ -62,6 +100,9 @@ def main() -> None:
         shown = "mf query " + " ".join(f'"{a}"' if any(ch in a for ch in " {'") else a for a in args)
         sections += ["", f"## {title}", "", "```bash", shown, "```", "", "```text", result.stdout.strip(), "```"]
         print(f"  ok: {title}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sections += semi_additive_check(Path(tmp))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(sections) + "\n")

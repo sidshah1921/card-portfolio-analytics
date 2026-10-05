@@ -1,6 +1,6 @@
 # card-portfolio-analytics
 
-[![dbt build](https://github.com/<your-github-username>/card-portfolio-analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/<your-github-username>/card-portfolio-analytics/actions/workflows/ci.yml)
+[![dbt build](https://github.com/sidshah1921/card-portfolio-analytics/actions/workflows/ci.yml/badge.svg)](https://github.com/sidshah1921/card-portfolio-analytics/actions/workflows/ci.yml)
 
 > ⚠️ **All data in this repository is synthetic.** It is produced by a seeded simulation in
 > `scripts/generate_data.py`. No real customers, accounts, institutions or bureau data are
@@ -68,8 +68,8 @@ flowchart LR
 
 | Model | Grain | Use |
 |---|---|---|
-| `mart_pipeline_reconciliation` | entity (statements, payments, accounts, customers) | Raw -> staged -> mart funnel: `raw_rows`, `rejected_*` by defect type, `staged_rows`, `mart_rows`, imputed / late-arriving counts. Tested: `raw - rejected = staged = mart`. |
-| `mart_dq_rejections` | source table x DQ check | What staging did with each defect class (rejected / imputed / accepted-and-flagged) |
+| `mart_pipeline_reconciliation` | entity (statements, payments, accounts, customers) | Raw -> staged -> mart funnel: `raw_rows`, `rejected_*` by defect type (incl. `rejected_outside_reporting_window`), `staged_rows`, `mart_rows`, imputed / late-arriving counts. Tested: `raw - rejected = staged = mart`. |
+| `mart_dq_rejections` | source table x DQ check | What staging did with each defect class (rejected / excluded outside window / imputed / accepted-and-flagged) |
 | `mart_data_quality` | test (latest run only) | Test name, model, severity, status, failures, run timestamp for the most recent run |
 | `mart_dq_history` | dbt run | `run_ts`, `tests_total`, `passed`, `warned`, `errored` (+ `skipped`, `failing_rows`) for every run |
 
@@ -95,27 +95,50 @@ the hook writes after all nodes finish.)
 30 through 150. Charge-off balances are recognised in the 180 DPD month; recoveries are payments
 received after charge-off. A roll forward is any increase in bucket rank month over month.
 
+**Reporting window:** Jan 2023 - Dec 2025 by default, declared as dbt vars
+`reporting_window_start` / `reporting_window_months` (the Makefile passes them from `START` /
+`MONTHS` so they always match the generator). Every fact and mart date is tested against
+`dim_date.is_in_reporting_window` with an error-severity `within_reporting_window` test.
+
+`dim_account.account_status` is `Open`, `Charged Off`, or `Inactive before window` - the latter
+for accounts the account master still carries that charged off during the generator's burn-in and
+so have no statements in the window.
+
 ## Metric definitions (semantic layer)
 
 Defined in [`models/semantic/_semantic_models.yml`](models/semantic/_semantic_models.yml); each
 metric carries `owner`, `formula` and `grain` in `config.meta`.
 
-| Metric | Type | Formula | Grain | Owner |
-|---|---|---|---|---|
-| `active_accounts` | simple | `COUNT(account months WHERE bucket <> 'CO')` | account x month | Credit Risk Analytics |
-| `delinquency_rate_30plus` | ratio | `COUNT(active, 30 <= DPD < 180) / COUNT(active)` - buckets 30, 60, 90, 120, 150 | account x month | Credit Risk Analytics |
-| `utilization_rate` | ratio | `SUM(balance) / SUM(credit_limit)`, active accounts | account x month | Portfolio Management |
-| `roll_rate` | ratio | `COUNT(bucket rank worsened vs t-1) / COUNT(accounts with a t-1 row)`; slice by `prior_delinquency_bucket` for Current->30 ... 150->CO | account x month transition | Credit Risk Analytics |
-| `net_charge_off_rate` | derived | `12 * (gross charge-offs - recoveries) / receivables` | month | Finance - Credit Loss Reporting |
+| Metric | Type | Formula | Additivity over time | Grain | Owner |
+|---|---|---|---|---|---|
+| `active_accounts` | simple | `COUNT(accounts WHERE bucket <> 'CO')` | **Semi-additive** (stock): last month of the period | account x month | Credit Risk Analytics |
+| `delinquency_rate_30plus` | ratio | `COUNT(active, 30 <= DPD < 180) / COUNT(active)` - buckets 30, 60, 90, 120, 150 | Ratio of semi-additive stocks: end-of-period rate | account x month | Credit Risk Analytics |
+| `utilization_rate` | ratio | `SUM(balance) / SUM(credit_limit)`, active accounts | Ratio of semi-additive stocks: end-of-period rate | account x month | Portfolio Management |
+| `roll_rate` | ratio | `COUNT(bucket rank worsened vs t-1) / COUNT(accounts with a t-1 row)`; slice by `prior_delinquency_bucket` for Current->30 ... 150->CO | Ratio of additive flows: average monthly roll rate over the period | account x month transition | Credit Risk Analytics |
+| `net_charge_off_rate` | derived | `12 * (gross charge-offs - recoveries) / SUM(monthly active balances)` | Ratio of additive flows: annualized over average receivables | month or coarser | Finance - Credit Loss Reporting |
 
-Component metrics: `dpd30_plus_accounts`, `receivables`, `credit_lines`, `roll_forward_accounts`,
-`roll_eligible_accounts`, `gross_charge_offs`, `recoveries`.
+Component metrics:
+
+| Metric | Additivity over time |
+|---|---|
+| `dpd30_plus_accounts`, `receivables` (balance), `credit_lines` (limit) | **Semi-additive** (stocks) - `non_additive_dimension: {name: statement_month, window_choice: max}` |
+| `gross_charge_offs`, `recoveries`, `roll_forward_accounts`, `roll_eligible_accounts`, `receivable_balance_months` | **Additive** (flows / events) - sum across months |
+
+**Stocks vs flows.** A stock (accounts open, balance outstanding, credit lines) is a point-in-time
+level: adding October + November + December active accounts triple-counts the book. Those measures
+are semi-additive: they add across accounts and products, but at quarter or year grain
+MetricFlow returns the last month of the period. Flows (charge-offs, recoveries, roll
+transitions) are events and sum normally. The net charge-off rate divides a flow by
+`receivable_balance_months` (the additive sum of monthly balances), so
+`12 x NCO / SUM(monthly balances)` = annualized NCO over *average* receivables at any grain.
+`docs/metric_examples.md` includes a check that Q4 2025 `active_accounts` equals December 2025.
 
 `make metrics` runs example MetricFlow queries and writes them to
 [`docs/metric_examples.md`](docs/metric_examples.md), for example:
 
 ```bash
 mf query --metrics delinquency_rate_30plus --group-by metric_time__month,account_month__product_name --start-time 2025-01-01
+mf query --metrics active_accounts,utilization_rate,net_charge_off_rate --group-by metric_time__quarter
 ```
 
 ## Synthetic data
@@ -131,7 +154,10 @@ mf query --metrics delinquency_rate_30plus --group-by metric_time__month,account
   generator raises roll probability for subprime FICO (< 620) and Student cards and adds
   post-holiday payment stress in Jan/Feb.
 - **Seasonality (by construction):** Q4 spend multiplier (Nov/Dec), visible in balances and `net_new_charges`.
-- **Loss:** 180 DPD triggers charge-off; ~35% of charge-offs produce recovery payments.
+- **Loss:** 180 DPD triggers charge-off; ~35% of in-window charge-offs produce recovery payments.
+- **Extract cutoff:** the payment extract runs to the end of the month *after* the window, like a
+  real extract pulled after period close. It therefore carries January activity (payments settling
+  December statements, recoveries) that staging excludes from reporting.
 
 ### Injected data-quality defects (and how staging handles them)
 
@@ -145,21 +171,23 @@ mf query --metrics delinquency_rate_30plus --group-by metric_time__month,account
 | Duplicate `payment_id` re-deliveries | raw_payments | 0.2% | First delivery kept (`duplicate_payment_id`) |
 | Orphan payments (unknown account) | raw_payments | 0.05% | Rejected (`orphan_account`) |
 | Late-arriving payments | raw_payments | 0.3% | Accepted, flagged |
+| Payments dated after the reporting window | raw_payments | ~4% | Excluded (`outside_reporting_window`) - not corrupt, out of period |
 
 ## Tests
 
-`dbt build` runs 1 seed, 22 models and **134 data tests** (123 severity `error`, 11 severity `warn`):
+`dbt build` runs 1 seed, 22 models and **144 data tests** (133 severity `error`, 11 severity `warn`):
 
 - **Generic:** `unique`, `not_null`, `relationships`, `accepted_values` on every key and categorical column.
 - **Custom generic** (`tests/generic/`):
   - `balance_within_limit` - balance <= credit limit x 1.1 (**warn**)
   - `no_gaps_in_months` - every account has a contiguous run of months (**error**)
   - `rows_sum_to` - roll-rate rows sum to 100% per from-bucket (**error**)
+  - `within_reporting_window` - every fact/mart date falls inside `dim_date`'s reporting window (**error**, 10 columns)
   - `unique_combination` (grain), `expression_is_true` (ranges, reconciliation identities)
 - **Singular** (`tests/singular/`): no DQ leakage into marts (error), charge-off is terminal at
   180 DPD (error), payments reconcile to statements (warn), monthly 30+ rate within 1-8% (warn).
 
-A clean run ends `PASS=156 WARN=3 ERROR=0`. The 3 warnings are the raw-source tests detecting
+A clean run ends `PASS=166 WARN=3 ERROR=0`. The 3 warnings are the raw-source tests detecting
 the injected null FICOs, duplicate payment ids and orphan payments - by design (see below).
 
 ## Design decisions
@@ -179,12 +207,25 @@ the injected null FICOs, duplicate payment ids and orphan payments - by design (
   integrity, gaps, roll-rate completeness, leakage). `warn` = worth a human look but not a reason
   to block the pipeline: raw-source checks (defects are *expected* there and are fixed downstream)
   and business-plausibility checks (over-limit balances, payment reconciliation, 30+ rate band).
+- **Out-of-window records are excluded in staging, not removed in the generator.** A real extract
+  is pulled after period close, so the source legitimately contains activity dated after the window
+  (January payments that settle December statements, late recoveries). Truncating it in the
+  generator would hide a condition the warehouse must handle. Instead the window is an explicit
+  contract (dbt vars), `base_payments` / `base_statements` label such rows
+  `outside_reporting_window`, they are counted as *excluded* (not corrupt) in `mart_dq_rejections`
+  and `mart_pipeline_reconciliation`, and `within_reporting_window` tests guard every mart date.
+  The one generator-side change: recoveries are only produced for charge-offs the extract reports,
+  since a recovery cannot be attributed to a charge-off that never appears in the data.
+- **Semi-additive stocks.** Balances and account counts are levels, not events; they are
+  `non_additive_dimension` measures so quarterly and yearly rollups return end-of-period values.
 - **Daily date spine.** Facts are monthly, but `dim_date` is daily (2018-2027) so it can serve as
   the MetricFlow time spine, which requires day granularity, and so Tableau can join any
-  date-grained field. Monthly facts join on `date_day = statement_month`; the Tableau export
-  filters it to month starts (`dim_date_monthly.csv`).
+  date-grained field. Monthly facts join on `date_day = statement_month`. It spans 2018-2027 so
+  seasoned accounts' open dates resolve; the Tableau export filters it to month starts inside the
+  reporting window (`dim_date_monthly.csv`, 36 rows).
 - **Aggregates only to Tableau.** Row-level facts (~1.2M account months, ~1.4M payments) stay in
-  DuckDB; dashboards use the pre-aggregated marts, so exports stay under 1 MB.
+  DuckDB; dashboards use the pre-aggregated marts, so exports stay under 1 MB. Every date in
+  every export falls inside Jan 2023 - Dec 2025.
 
 ## How to run
 
@@ -219,12 +260,13 @@ data-quality summary.
 | mart_roll_rates.csv | 2,167 | 254.1 KB |
 | mart_vintage_curves.csv | 840 | 96.2 KB |
 | mart_utilization_risk.csv | 3,330 | 331.6 KB |
-| mart_dq_rejections.csv | 8 | 0.6 KB |
-| mart_data_quality.csv | 134 | 40.4 KB |
+| mart_dq_rejections.csv | 9 | 0.7 KB |
+| mart_data_quality.csv | 144 | 43.5 KB |
 | mart_dq_history.csv | 1 per run | 0.2 KB |
 | mart_pipeline_reconciliation.csv | 4 | 0.6 KB |
 | dim_product.csv | 4 | 0.5 KB |
-| dim_date_monthly.csv | 120 | 9.7 KB |
+| dim_date_monthly.csv | 36 | 3.2 KB |
+| **total** | | **759 KB** |
 
 ## Generated outputs at default settings (seed 42)
 
@@ -234,13 +276,13 @@ They are not observations about any real portfolio.
 | Table | Rows |
 |---|---|
 | raw_statements -> fct_account_month | 1,175,116 -> 1,166,949 |
-| raw_payments -> fct_payments | 1,396,053 -> 1,385,662 |
+| raw_payments -> fct_payments | 1,395,923 -> 1,330,453 (55,174 excluded as outside the window) |
 | raw_accounts / raw_customers | 50,000 / 43,000 |
 
 | Measure | Value |
 |---|---|
 | 30+ DPD rate (accounts, 36-month pooled) | 3.53% (monthly range 3.16%-4.27%) |
-| Net charge-off rate (annualized, pooled) | 3.37% |
+| Net charge-off rate (annualized, pooled) | 3.36% |
 | Roll rates Current->30 / 30->60 / 60->90 / 90->120 / 120->150 / 150->CO | 1.4% / 35.6% / 59.3% / 75.1% / 83.4% / 90.6% |
 
 ## Repository layout

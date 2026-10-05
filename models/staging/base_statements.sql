@@ -37,6 +37,8 @@ classified as (
         case
             when a.account_id is null then 'orphan_account'
             when v.balance is null or v.days_past_due is null then 'unparseable'
+            when v.statement_month not between {{ reporting_window_start() }} and {{ reporting_window_end() }}
+                then 'outside_reporting_window'
             when v.version_rank > 1
                 and v.record_hash = first_value(v.record_hash) over (
                     partition by v.account_id, v.statement_month order by v.version_rank
