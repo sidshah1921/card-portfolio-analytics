@@ -1,0 +1,41 @@
+name: card_portfolio_analytics
+version: "1.0.0"
+config-version: 2
+profile: card_portfolio_analytics
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
+
+vars:
+  raw_data_path: "data/raw"
+  # Utilization at or above this level is treated as "high utilization" in reporting.
+  high_utilization_threshold: 0.70
+
+on-run-start:
+  - "{{ create_test_results_table() }}"
+on-run-end:
+  - "{{ log_test_results(results) }}"
+
+models:
+  card_portfolio_analytics:
+    staging:
+      +schema: staging
+      +materialized: view
+    intermediate:
+      +schema: intermediate
+      +materialized: table
+    marts:
+      +schema: marts
+      +materialized: table
+
+seeds:
+  card_portfolio_analytics:
+    +schema: reference
+
+data_tests:
+  card_portfolio_analytics:
+    +severity: error

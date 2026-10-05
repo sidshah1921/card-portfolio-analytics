@@ -1,0 +1,229 @@
+version: 2
+
+semantic_models:
+  - name: account_month
+    description: Account x month delinquency and balance facts (fct_account_month).
+    model: ref('fct_account_month')
+    defaults:
+      agg_time_dimension: statement_month
+    entities:
+      - name: account_month
+        type: primary
+        expr: account_month_id
+      - name: account
+        type: foreign
+        expr: account_id
+      - name: customer
+        type: foreign
+        expr: customer_id
+    dimensions:
+      - name: statement_month
+        type: time
+        type_params:
+          time_granularity: month
+      - name: product_name
+        type: categorical
+      - name: delinquency_bucket
+        description: Current, 30, 60, 90, 120, 150 or CO (180 DPD charge-off).
+        type: categorical
+      - name: prior_delinquency_bucket
+        description: Bucket in the prior month (Current ... 150; CO is terminal).
+        type: categorical
+        expr: prior_bucket
+      - name: fico_band
+        type: categorical
+      - name: utilization_band
+        type: categorical
+    measures:
+      - name: active_account_count
+        description: Open, non-charged-off account months.
+        agg: sum
+        expr: case when is_active then 1 else 0 end
+      - name: dpd30_plus_account_count
+        description: Account months 30-179 DPD.
+        agg: sum
+        expr: case when is_30plus then 1 else 0 end
+      - name: active_balance
+        description: Balance of active account months.
+        agg: sum
+        expr: case when is_active then balance else 0 end
+      - name: active_credit_limit
+        description: Credit limit of active account months.
+        agg: sum
+        expr: case when is_active then credit_limit else 0 end
+      - name: roll_forward_count
+        description: Account months whose bucket worsened vs the prior month.
+        agg: sum
+        expr: case when is_roll_forward then 1 else 0 end
+      - name: roll_eligible_count
+        description: Account months with a prior-month observation.
+        agg: sum
+        expr: case when has_prior_month then 1 else 0 end
+      - name: gross_charge_off_amount
+        description: Balances written off at 180 DPD.
+        agg: sum
+
+  - name: payment
+    description: Payment transactions (fct_payments).
+    model: ref('fct_payments')
+    defaults:
+      agg_time_dimension: payment_month
+    entities:
+      - name: payment
+        type: primary
+        expr: payment_id
+      - name: account
+        type: foreign
+        expr: account_id
+    dimensions:
+      - name: payment_month
+        type: time
+        type_params:
+          time_granularity: month
+      - name: payment_type
+        type: categorical
+    measures:
+      - name: recovery_amount
+        description: Payments received after charge-off.
+        agg: sum
+        expr: case when payment_type = 'Recovery' then amount else 0 end
+
+metrics:
+  # ---------------------------------------------------------------- headline metrics
+  - name: active_accounts
+    label: Active accounts
+    description: Number of open, non-charged-off accounts with a statement in the period.
+    type: simple
+    type_params:
+      measure: active_account_count
+    config:
+      meta:
+        owner: Credit Risk Analytics
+        formula: "COUNT(account months WHERE delinquency_bucket <> 'CO')"
+        grain: account x month (sum over accounts; take a single month, do not sum across months)
+
+  - name: delinquency_rate_30plus
+    label: 30+ DPD delinquency rate
+    description: >
+      Share of active accounts that are 30 to 179 days past due, i.e. in buckets
+      30, 60, 90, 120 or 150. Charged-off accounts (CO, 180 DPD) are excluded from both
+      numerator and denominator.
+    type: ratio
+    type_params:
+      numerator: dpd30_plus_accounts
+      denominator: active_accounts
+    config:
+      meta:
+        owner: Credit Risk Analytics
+        formula: "COUNT(active accounts with 30 <= DPD < 180) / COUNT(active accounts)"
+        grain: account x month
+
+  - name: utilization_rate
+    label: Utilization rate
+    description: Outstanding balance of active accounts as a share of their credit limit.
+    type: ratio
+    type_params:
+      numerator: receivables
+      denominator: credit_lines
+    config:
+      meta:
+        owner: Portfolio Management
+        formula: "SUM(balance) / SUM(credit_limit), active accounts"
+        grain: account x month
+
+  - name: roll_rate
+    label: Roll rate (forward)
+    description: >
+      Share of accounts whose delinquency bucket worsened versus the prior month, on the
+      ladder Current -> 30 -> 60 -> 90 -> 120 -> 150 -> CO (charge-off at 180 DPD).
+      Slice by prior_delinquency_bucket for bucket-to-bucket roll rates (e.g. Current -> 30,
+      150 -> CO).
+    type: ratio
+    type_params:
+      numerator: roll_forward_accounts
+      denominator: roll_eligible_accounts
+    config:
+      meta:
+        owner: Credit Risk Analytics
+        formula: "COUNT(bucket rank(t) > bucket rank(t-1)) / COUNT(accounts with a row in t-1)"
+        grain: account x month transition
+
+  - name: net_charge_off_rate
+    label: Net charge-off rate (annualized)
+    description: Gross charge-offs less recoveries in the month, annualized, over outstanding receivables.
+    type: derived
+    type_params:
+      expr: (gross_charge_offs - recoveries) * 12 / receivables
+      metrics:
+        - name: gross_charge_offs
+        - name: recoveries
+        - name: receivables
+    config:
+      meta:
+        owner: Finance - Credit Loss Reporting
+        formula: "12 * (SUM(gross charge-off $) - SUM(recoveries $)) / SUM(active balance)"
+        grain: month (portfolio or product)
+
+  # ------------------------------------------------------- component metrics
+  - name: dpd30_plus_accounts
+    label: 30+ DPD accounts
+    description: Active accounts 30-179 days past due (buckets 30, 60, 90, 120, 150).
+    type: simple
+    type_params:
+      measure: dpd30_plus_account_count
+    config:
+      meta: {owner: Credit Risk Analytics, formula: "COUNT(30 <= DPD < 180)", grain: account x month}
+
+  - name: receivables
+    label: Receivables
+    description: Outstanding balance of active accounts.
+    type: simple
+    type_params:
+      measure: active_balance
+    config:
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(balance), active accounts", grain: account x month}
+
+  - name: credit_lines
+    label: Credit lines
+    description: Total credit limit of active accounts.
+    type: simple
+    type_params:
+      measure: active_credit_limit
+    config:
+      meta: {owner: Portfolio Management, formula: "SUM(credit_limit), active accounts", grain: account x month}
+
+  - name: roll_forward_accounts
+    label: Roll-forward accounts
+    description: Accounts whose bucket worsened versus the prior month.
+    type: simple
+    type_params:
+      measure: roll_forward_count
+    config:
+      meta: {owner: Credit Risk Analytics, formula: "COUNT(bucket rank increased)", grain: account x month}
+
+  - name: roll_eligible_accounts
+    label: Roll-eligible accounts
+    description: Accounts with a prior-month observation.
+    type: simple
+    type_params:
+      measure: roll_eligible_count
+    config:
+      meta: {owner: Credit Risk Analytics, formula: "COUNT(has prior month)", grain: account x month}
+
+  - name: gross_charge_offs
+    label: Gross charge-offs
+    description: Balances written off when accounts roll from the 150 bucket to CO at 180 DPD.
+    type: simple
+    type_params:
+      measure: gross_charge_off_amount
+    config:
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(balance at 180 DPD)", grain: account x month}
+
+  - name: recoveries
+    label: Recoveries
+    description: Payments collected on previously charged-off accounts.
+    type: simple
+    type_params:
+      measure: recovery_amount
+    config:
+      meta: {owner: Finance - Credit Loss Reporting, formula: "SUM(post-charge-off payments)", grain: payment}

@@ -1,0 +1,236 @@
+version: 2
+
+models:
+  - name: mart_roll_rates
+    description: >
+      Delinquency roll-rate matrix for Tableau. **Grain: transition month x product x
+      from-bucket x to-bucket.** Each row counts accounts that were in `from_bucket` in
+      `from_month` and in `to_bucket` in `transition_month`. Within each
+      (transition_month, product_name, from_bucket) the `roll_rate_pct` values sum to 100.
+      Charge-off is terminal, so CO never appears as a from-bucket.
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [transition_month, product_name, from_bucket, to_bucket]}
+    columns:
+      - name: transition_month
+        description: Month the account landed in to_bucket.
+        data_tests: [not_null]
+      - name: from_month
+        description: Prior month (transition_month - 1 month).
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "from_month = cast(transition_month - interval 1 month as date)"}
+      - name: product_name
+        description: Card product.
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_product'), field: product_name}
+      - name: from_bucket
+        description: Delinquency bucket in from_month.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Current", "30", "60", "90", "120", "150"]}
+      - name: from_bucket_rank
+        description: Sort order for from_bucket (Current = 0).
+      - name: to_bucket
+        description: Delinquency bucket in transition_month.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Current", "30", "60", "90", "120", "150", "CO"]}
+      - name: to_bucket_rank
+        description: Sort order for to_bucket (Current = 0, CO = 6).
+      - name: transition_type
+        description: Stay / Roll forward / Cure / Partial cure.
+      - name: accounts
+        description: Accounts making this transition.
+      - name: from_balance
+        description: Sum of from_month balances of those accounts.
+      - name: to_balance
+        description: Sum of transition_month balances of those accounts.
+      - name: from_bucket_accounts
+        description: All accounts in from_bucket for this month and product (the denominator).
+      - name: from_bucket_balance
+        description: All from_month balance in from_bucket for this month and product.
+      - name: roll_rate_pct
+        description: 100 * accounts / from_bucket_accounts. Sums to 100 per from-bucket.
+        data_tests:
+          - rows_sum_to:
+              arguments: {group_by: [transition_month, product_name, from_bucket], target: 100, tolerance: 0.01}
+      - name: balance_roll_rate_pct
+        description: 100 * from_balance / from_bucket_balance (dollar-weighted roll rate).
+
+  - name: mart_vintage_curves
+    description: >
+      Vintage (static pool) performance for Tableau. **Grain: origination quarter x product
+      x months on book.** Covers vintages originated inside the reporting window and only
+      months on book that every account in the vintage has reached, so each curve point is a
+      complete, comparable observation.
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [vintage_quarter, product_name, months_on_book]}
+    columns:
+      - name: vintage_quarter
+        description: Origination quarter (YYYY-Qn).
+        data_tests: [not_null]
+      - name: vintage_quarter_start
+        description: First day of the origination quarter.
+      - name: product_name
+        description: Card product.
+      - name: months_on_book
+        description: Months since origination (0 = open month).
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "months_on_book >= 0"}
+      - name: originated_accounts
+        description: Accounts originated in the vintage (static pool size).
+      - name: originated_credit_limit
+        description: Total credit limit originated in the vintage.
+      - name: active_accounts
+        description: Vintage accounts open and not charged off at this months on book.
+      - name: accounts_30plus
+        description: Vintage accounts 30-179 DPD at this months on book.
+      - name: active_balance
+        description: Balance of active vintage accounts at this months on book.
+      - name: cum_ever_30plus_accounts
+        description: Accounts that have been 30+ DPD at any point up to this months on book.
+      - name: cum_ever_60plus_accounts
+        description: Accounts that have been 60+ DPD at any point up to this months on book.
+      - name: cum_charged_off_accounts
+        description: Accounts charged off by this months on book.
+      - name: cum_gross_charge_off_amount
+        description: Cumulative gross charge-off dollars by this months on book.
+      - name: dpd30_plus_rate
+        description: accounts_30plus / active_accounts.
+      - name: cum_ever_30plus_rate
+        description: cum_ever_30plus_accounts / originated_accounts.
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "cum_ever_30plus_rate between 0 and 1"}
+      - name: cum_ever_60plus_rate
+        description: cum_ever_60plus_accounts / originated_accounts.
+      - name: cum_charge_off_rate
+        description: cum_charged_off_accounts / originated_accounts (the classic vintage loss curve).
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "cum_charge_off_rate between 0 and 1"}
+      - name: cum_charge_off_pct_of_limit
+        description: cum_gross_charge_off_amount / originated_credit_limit.
+
+  - name: mart_utilization_risk
+    description: >
+      Utilization as a leading indicator of delinquency. **Grain: observation month x product
+      x FICO band x utilization band**, for accounts that are Current in the observation month.
+      Forward outcomes look 3 and 6 months ahead, so only observation months with a complete
+      6-month forward window are included. Bad rates rise monotonically with utilization.
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [observation_month, product_name, fico_band, utilization_band]}
+    columns:
+      - name: observation_month
+        description: Month the Current-account snapshot is taken.
+        data_tests: [not_null]
+      - name: product_name
+        description: Card product.
+      - name: fico_band
+        description: Refreshed FICO band in the observation month.
+      - name: utilization_band
+        description: Utilization band in the observation month.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["1. <10%", "2. 10-30%", "3. 30-50%", "4. 50-70%", "5. 70-90%", "6. 90%+"]}
+      - name: current_accounts
+        description: Current (0-29 DPD) accounts in the cell.
+      - name: balance
+        description: Total balance of those accounts.
+      - name: credit_limit
+        description: Total credit limit of those accounts.
+      - name: utilization_rate
+        description: balance / credit_limit for the cell.
+      - name: accounts_30plus_next_3m
+        description: Accounts that reach 30+ DPD within the next 3 months.
+      - name: accounts_60plus_next_6m
+        description: Accounts that reach 60+ DPD within the next 6 months.
+      - name: accounts_charged_off_next_6m
+        description: Accounts that charge off within the next 6 months.
+      - name: bad_rate_30plus_3m
+        description: accounts_30plus_next_3m / current_accounts.
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "bad_rate_30plus_3m between 0 and 1"}
+      - name: bad_rate_60plus_6m
+        description: accounts_60plus_next_6m / current_accounts.
+
+  - name: mart_portfolio_kpis
+    description: >
+      Monthly portfolio scorecard for Tableau. **Grain: statement month x product.**
+      Count and dollar columns are additive across products; rate columns are pre-computed
+      at this grain - when rolling up, recompute rates from their numerator / denominator
+      columns (e.g. SUM(accounts_30plus) / SUM(active_accounts)).
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [statement_month, product_name]}
+    columns:
+      - name: statement_month
+        description: Statement month (first day). Joins to dim_date.date_day.
+        data_tests: [not_null]
+      - name: product_name
+        description: Card product.
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_product'), field: product_name}
+      - name: active_accounts
+        description: Open, non-charged-off accounts with a statement this month.
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "active_accounts > 0"}
+      - name: new_accounts
+        description: Accounts in their open month.
+      - name: total_balance
+        description: Outstanding receivables of active accounts (USD).
+      - name: total_credit_limit
+        description: Credit limit of active accounts (USD).
+      - name: accounts_30plus
+        description: Active accounts 30-179 DPD.
+      - name: accounts_60plus
+        description: Active accounts 60-179 DPD.
+      - name: accounts_90plus
+        description: Active accounts 90-179 DPD.
+      - name: balance_30plus
+        description: Balance of 30+ DPD accounts.
+      - name: charge_off_accounts
+        description: Accounts charging off this month (reaching 180 DPD).
+      - name: gross_charge_off_amount
+        description: Balances written off this month.
+      - name: recoveries_amount
+        description: Post-charge-off recovery payments posted this month.
+      - name: net_charge_off_amount
+        description: gross_charge_off_amount - recoveries_amount.
+      - name: payments_amount
+        description: Payments made against this month's statements of active accounts.
+      - name: prior_current_accounts
+        description: Accounts that were Current last month (denominator of roll_rate_current_to_30).
+      - name: current_to_30_accounts
+        description: Accounts that rolled Current -> 30 this month.
+      - name: roll_eligible_accounts
+        description: Accounts with a prior-month row (denominator of roll_rate).
+      - name: roll_forward_accounts
+        description: Accounts whose bucket worsened versus the prior month.
+      - name: avg_fico_score
+        description: Average refreshed FICO of active accounts.
+      - name: utilization_rate
+        description: total_balance / total_credit_limit.
+      - name: delinquency_rate_30plus
+        description: accounts_30plus / active_accounts (count-based 30+ DPD rate).
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "delinquency_rate_30plus between 0 and 1"}
+      - name: delinquency_rate_30plus_balance
+        description: balance_30plus / total_balance (dollar-based 30+ DPD rate).
+      - name: delinquency_rate_60plus
+        description: accounts_60plus / active_accounts.
+      - name: roll_rate_current_to_30
+        description: current_to_30_accounts / prior_current_accounts.
+      - name: roll_rate
+        description: roll_forward_accounts / roll_eligible_accounts (all buckets).
+      - name: net_charge_off_rate_annualized
+        description: 12 * net_charge_off_amount / total_balance.

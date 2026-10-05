@@ -1,0 +1,127 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: Typed, deduplicated customers (latest load per customer_id).
+    columns:
+      - name: customer_id
+        description: Customer natural key.
+        data_tests: [unique, not_null]
+      - name: state
+        description: US state / DC of residence (2-letter code).
+        data_tests: [not_null]
+      - name: age_band
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]}
+      - name: income_band
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["<35k", "35k-60k", "60k-100k", "100k-150k", "150k+"]}
+      - name: acquisition_channel
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Digital", "Direct Mail", "Branch", "Partner", "Referral"]}
+      - name: customer_since_date
+        data_tests: [not_null]
+
+  - name: stg_accounts
+    description: Typed, deduplicated card accounts (latest load per account_id).
+    columns:
+      - name: account_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('stg_customers'), field: customer_id}
+      - name: product_name
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Cashback", "Travel", "Student", "Platinum"]}
+      - name: credit_limit
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments: {expression: "credit_limit > 0"}
+      - name: fico_at_origination
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments: {expression: "fico_at_origination between 300 and 850"}
+
+  - name: base_statements
+    description: >
+      Every raw statement record, typed and labelled with a dq_status
+      (valid / exact_duplicate / superseded_restatement / orphan_account / unparseable).
+      Latest load wins for each account x month.
+    columns:
+      - name: dq_status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: ["valid", "exact_duplicate", "superseded_restatement", "orphan_account", "unparseable"]}
+
+  - name: stg_statements
+    description: >
+      Clean statement grain - exactly one row per account x statement month. Duplicates and
+      superseded restatements are removed; null FICO refreshes are forward-filled from the
+      account's last reported score (is_fico_imputed flags them).
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [account_id, statement_month]}
+    columns:
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('stg_accounts'), field: account_id}
+      - name: statement_month
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments: {expression: "statement_month = date_trunc('month', statement_month)"}
+      - name: balance
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments: {expression: "balance >= 0"}
+      - name: payment_amount
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "payment_amount >= 0"}
+      - name: days_past_due
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "days_past_due between 0 and 180"}
+      - name: fico_refresh_filled
+        description: Reported FICO, forward-filled within the account when the bureau feed is null.
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "fico_refresh_filled between 300 and 850"}
+              config: {where: "fico_refresh_filled is not null"}
+
+  - name: base_payments
+    description: >
+      Every raw payment record, typed and labelled with a dq_status
+      (valid / non_positive_amount / orphan_account / duplicate_payment_id / unparseable).
+    columns:
+      - name: dq_status
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["valid", "non_positive_amount", "orphan_account", "duplicate_payment_id", "unparseable"]}
+
+  - name: stg_payments
+    description: Clean payments - positive amounts, known accounts, one row per payment_id.
+    columns:
+      - name: payment_id
+        data_tests: [unique, not_null]
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('stg_accounts'), field: account_id}
+      - name: amount
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "amount > 0"}

@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+target/
+dbt_packages/
+logs/
+.user.yml
+data/raw/*.csv
+data/exports/*.csv
+data/*.duckdb
+data/*.duckdb.wal
+.DS_Store
+
+# AI assistant / tool configuration - never committed
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.cursor/
+.cursorrules
+.windsurfrules
+.aider*
+.continue/
+.codeium/
+.copilot/
+.github/copilot-instructions.md
+AGENTS.md
+GEMINI.md
+.gemini/

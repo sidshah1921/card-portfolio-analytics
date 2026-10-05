@@ -1,0 +1,14 @@
+version: 2
+seeds:
+  - name: product_catalog
+    description: Reference attributes for each card product (synthetic). Source for dim_product.
+    config:
+      column_types:
+        annual_fee: integer
+        purchase_apr: double
+        rewards_rate_pct: double
+        launched_year: integer
+    columns:
+      - name: product_name
+        description: Product name; natural key.
+        data_tests: [unique, not_null]

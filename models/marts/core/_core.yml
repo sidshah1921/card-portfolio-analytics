@@ -1,0 +1,327 @@
+version: 2
+
+models:
+  - name: dim_date
+    description: >
+      Daily calendar spine 2018-01-01 to 2027-12-31. Monthly facts join on
+      `date_day = statement_month` (statement months are stored as the first day of the month).
+      Also registered as the MetricFlow time spine for the semantic layer.
+    time_spine:
+      standard_granularity_column: date_day
+    columns:
+      - name: date_day
+        description: Calendar date; primary key.
+        granularity: day
+        data_tests: [unique, not_null]
+      - name: month_start
+        description: First day of the month containing date_day.
+      - name: quarter_start
+        description: First day of the calendar quarter.
+      - name: calendar_year
+        description: Calendar year.
+      - name: calendar_quarter
+        description: Calendar quarter (1-4).
+        data_tests:
+          - accepted_values:
+              arguments: {values: [1, 2, 3, 4], quote: false}
+      - name: calendar_month
+        description: Calendar month number (1-12).
+      - name: month_name_short
+        description: Three-letter month name (Jan..Dec).
+      - name: year_month
+        description: YYYY-MM label.
+      - name: year_quarter
+        description: YYYY-Qn label.
+      - name: day_of_week
+        description: Day of week, 0 = Sunday.
+      - name: is_month_start
+        description: True on the first day of a month - filter on this to get a monthly calendar.
+      - name: is_month_end
+        description: True on the last day of a month.
+      - name: is_holiday_quarter
+        description: True for Q4 (Oct-Dec), the seasonal spend peak.
+
+  - name: dim_product
+    description: One row per card product, with catalog attributes and booked-account summary.
+    columns:
+      - name: product_name
+        description: Product name; primary key (Cashback / Travel / Student / Platinum).
+        data_tests:
+          - unique
+          - not_null
+          - accepted_values:
+              arguments: {values: ["Cashback", "Travel", "Student", "Platinum"]}
+      - name: product_family
+        description: Product family (Rewards / Starter / Premium).
+      - name: target_segment
+        description: Intended customer segment.
+      - name: annual_fee
+        description: Annual fee in USD.
+      - name: purchase_apr
+        description: Standard purchase APR (decimal, e.g. 0.2399).
+      - name: rewards_program
+        description: Rewards currency.
+      - name: rewards_rate_pct
+        description: Base earn rate, percent of spend.
+      - name: launched_year
+        description: Year the product launched.
+      - name: accounts_booked
+        description: Number of accounts ever booked on the product.
+      - name: avg_credit_limit
+        description: Average credit limit across booked accounts.
+      - name: avg_fico_at_origination
+        description: Average FICO at origination across booked accounts.
+
+  - name: dim_customer
+    description: One row per customer with demographics, acquisition channel and account holdings.
+    columns:
+      - name: customer_id
+        description: Customer natural key; primary key.
+        data_tests: [unique, not_null]
+      - name: state
+        description: State of residence (2-letter code, includes DC).
+        data_tests: [not_null]
+      - name: age_band
+        description: Age band at application.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["18-24", "25-34", "35-44", "45-54", "55-64", "65+"]}
+      - name: income_band
+        description: Self-reported annual income band.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["<35k", "35k-60k", "60k-100k", "100k-150k", "150k+"]}
+      - name: acquisition_channel
+        description: Channel through which the customer was acquired.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Digital", "Direct Mail", "Branch", "Partner", "Referral"]}
+      - name: customer_since_date
+        description: Open date of the customer's first account.
+      - name: number_of_accounts
+        description: Count of card accounts held.
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "number_of_accounts >= 1"}
+      - name: products_held
+        description: Comma-separated distinct products held.
+      - name: first_account_open_date
+        description: Earliest account open date (should equal customer_since_date).
+
+  - name: dim_account
+    description: >
+      One row per card account: static origination attributes plus lifetime outcome
+      attributes (status, charge-off, ever-delinquent flags, latest snapshot).
+    columns:
+      - name: account_id
+        description: Account natural key; primary key.
+        data_tests: [unique, not_null]
+      - name: customer_id
+        description: Owning customer.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_customer'), field: customer_id}
+      - name: product_name
+        description: Card product.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_product'), field: product_name}
+      - name: credit_limit
+        description: Credit limit in USD (static over the account life in this dataset).
+      - name: open_date
+        description: Account open date.
+        data_tests: [not_null]
+      - name: open_month
+        description: First day of the open month; months_on_book is measured from here.
+      - name: vintage_quarter
+        description: Origination quarter label (YYYY-Qn) used for vintage analysis.
+      - name: vintage_quarter_start
+        description: First day of the origination quarter.
+      - name: fico_at_origination
+        description: FICO score at origination.
+      - name: fico_band_at_origination
+        description: FICO band at origination (Subprime <620 ... Super-prime 780+).
+      - name: is_subprime_at_origination
+        description: True when fico_at_origination < 620.
+      - name: account_status
+        description: Open, or Charged Off once the account reaches 180 DPD.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Open", "Charged Off"]}
+      - name: first_statement_month
+        description: First statement month observed in the reporting window.
+      - name: last_statement_month
+        description: Last statement month observed (the charge-off month for charged-off accounts).
+      - name: charge_off_month
+        description: Statement month in which the account charged off (null if open).
+      - name: charge_off_amount
+        description: Balance written off at charge-off (0 if open).
+      - name: ever_30plus
+        description: Account has been 30+ DPD at least once in the window.
+      - name: ever_60plus
+        description: Account has been 60+ DPD at least once in the window.
+      - name: latest_delinquency_bucket
+        description: Delinquency bucket on the latest statement.
+      - name: latest_fico_score
+        description: Latest refreshed FICO score (imputed where the bureau feed was null).
+      - name: latest_balance
+        description: Balance on the latest statement.
+
+  - name: fct_account_month
+    description: >
+      Core monthly fact. **Grain: one row per account x statement month** for every month
+      the account is on book in the reporting window, through and including the charge-off
+      month. No gaps between an account's first and last month (tested).
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [account_id, statement_month]}
+    columns:
+      - name: account_month_id
+        description: Surrogate key `<account_id>-<YYYYMM>`; primary key.
+        data_tests: [unique, not_null]
+      - name: account_id
+        description: Card account.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_account'), field: account_id}
+      - name: customer_id
+        description: Owning customer.
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_customer'), field: customer_id}
+      - name: product_name
+        description: Card product.
+        data_tests:
+          - relationships:
+              arguments: {to: ref('dim_product'), field: product_name}
+      - name: statement_month
+        description: Statement month (first day of month). Joins to dim_date.date_day.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_date'), field: date_day}
+          - no_gaps_in_months:
+              arguments: {partition_by: account_id}
+      - name: months_on_book
+        description: Whole months since the account's open month (0 = open month).
+      - name: is_new_account
+        description: True in the account's open month.
+      - name: credit_limit
+        description: Credit limit in USD.
+      - name: balance
+        description: Statement balance in USD.
+        data_tests:
+          - not_null
+          - balance_within_limit:
+              arguments: {limit_column: credit_limit, multiplier: 1.1}
+              config: {severity: warn}
+      - name: min_due
+        description: Minimum payment due, including any past-due amount.
+      - name: payment_amount
+        description: Total paid against this statement during the following cycle.
+      - name: utilization
+        description: balance / credit_limit.
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "utilization between 0 and 1.1"}
+              config: {severity: warn}
+      - name: utilization_band
+        description: Utilization band (<10%, 10-30%, ..., 90%+), prefixed for sort order.
+      - name: is_high_utilization
+        description: utilization >= var('high_utilization_threshold') (default 70%).
+      - name: net_new_charges
+        description: >
+          balance - (prior balance - prior payment): purchases plus interest and fees posted
+          during the cycle. Shows the Q4 spend spike. Null in an account's first month.
+      - name: payment_rate
+        description: Prior-cycle payment / prior balance.
+      - name: days_past_due
+        description: Days past due at statement date (0-180).
+      - name: delinquency_bucket
+        description: Current (0-29 DPD), 30 (30-59), 60 (60-89), 90 (90-119), 120 (120-149), 150 (150-179) or CO (180, charged off).
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: ["Current", "30", "60", "90", "120", "150", "CO"]}
+      - name: bucket_rank
+        description: Ordinal severity of the bucket, Current = 0, 30 = 1, 60 = 2, 90 = 3, 120 = 4, 150 = 5, CO = 6.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [0, 1, 2, 3, 4, 5, 6], quote: false}
+      - name: prior_bucket
+        description: Bucket in the prior month; null in the account's first observed month.
+      - name: transition_type
+        description: New / Stay / Roll forward / Cure / Partial cure versus the prior month.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["New", "Roll forward", "Stay", "Cure", "Partial cure"]}
+      - name: is_active
+        description: Open and not charged off in this month (bucket <> CO). Denominator for rate metrics.
+      - name: is_30plus
+        description: 30-179 DPD (buckets 30, 60, 90, 120, 150). Excludes the CO month.
+      - name: is_60plus
+        description: 60-179 DPD.
+      - name: is_90plus
+        description: 90-179 DPD.
+      - name: is_charge_off
+        description: True in the month the account charges off (180 DPD).
+      - name: gross_charge_off_amount
+        description: Balance written off this month (0 unless is_charge_off).
+      - name: has_prior_month
+        description: The account has a prior-month row (eligible for roll-rate denominators).
+      - name: is_roll_forward
+        description: Bucket worsened versus the prior month.
+      - name: fico_score
+        description: Refreshed FICO; forward-filled when the bureau feed was null, else origination FICO.
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments: {expression: "fico_score between 300 and 850"}
+      - name: fico_band
+        description: Band of the refreshed FICO score.
+      - name: is_fico_imputed
+        description: True when the reported FICO was null and fico_score was imputed.
+      - name: is_late_arriving
+        description: The statement record was loaded more than 45 days after the statement month opened.
+
+  - name: fct_payments
+    description: >
+      **Grain: one row per valid payment transaction.** Negative amounts, duplicate payment_ids
+      and orphan accounts are removed in staging. Recoveries are payments received after charge-off.
+    columns:
+      - name: payment_id
+        description: Payment transaction id; primary key.
+        data_tests: [unique, not_null]
+      - name: account_id
+        description: Paying account.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments: {to: ref('dim_account'), field: account_id}
+      - name: customer_id
+        description: Owning customer.
+      - name: product_name
+        description: Card product.
+      - name: payment_date
+        description: Date the payment posted.
+        data_tests: [not_null]
+      - name: payment_month
+        description: First day of the posting month.
+      - name: cycle_statement_month
+        description: Statement month the payment settles (the month before payment_month).
+      - name: amount
+        description: Payment amount in USD (always positive).
+        data_tests:
+          - not_null
+          - expression_is_true:
+              arguments: {expression: "amount > 0"}
+      - name: payment_type
+        description: Cycle payment, or Recovery (received after the account charged off).
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Cycle payment", "Recovery"]}
+      - name: is_late_arriving
+        description: Loaded more than 7 days after the payment date.

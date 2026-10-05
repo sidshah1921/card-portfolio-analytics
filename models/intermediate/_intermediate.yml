@@ -1,0 +1,33 @@
+version: 2
+
+models:
+  - name: int_account_months
+    description: Account x month enriched with delinquency bucket, utilization, FICO and months on book.
+    data_tests:
+      - unique_combination:
+          arguments: {combination_of_columns: [account_id, statement_month]}
+    columns:
+      - name: delinquency_bucket
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments: {values: ["Current", "30", "60", "90", "120", "150", "CO"]}
+      - name: months_on_book
+        data_tests:
+          - expression_is_true:
+              arguments: {expression: "months_on_book >= 0"}
+
+  - name: int_bucket_transitions
+    description: >
+      Month-over-month bucket transitions. prior_* columns come from the same account's
+      previous statement month (guaranteed contiguous by the no-gaps test on fct_account_month).
+    columns:
+      - name: transition_type
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["New", "Roll forward", "Stay", "Cure", "Partial cure"]}
+      - name: prior_bucket
+        description: Prior-month bucket. Never 'CO' - charge-off is terminal.
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["Current", "30", "60", "90", "120", "150"]}

@@ -1,0 +1,140 @@
+version: 2
+
+sources:
+  - name: audit
+    description: Audit tables maintained by dbt run hooks (see macros/test_results.sql).
+    tables:
+      - name: test_results
+        description: Append-only log of data test results, one row per test per invocation.
+
+models:
+  - name: mart_data_quality
+    description: >
+      **Grain: one row per data test in the latest dbt invocation that ran tests.**
+      The on-run-end hook `log_test_results` appends every run's results to
+      `audit.test_results` (full history, see mart_dq_history); this view filters to the most
+      recent run. Source tests (severity warn) are expected to warn - they measure the
+      defects in the raw extracts.
+    columns:
+      - name: invocation_id
+        description: dbt invocation id of the run (identical on every row).
+        data_tests: [not_null]
+      - name: run_started_at
+        description: Run start timestamp (UTC).
+      - name: test_unique_id
+        description: dbt unique_id of the test node.
+        data_tests: [unique]
+      - name: test_name
+        description: Test node name.
+      - name: test_type
+        description: Generic test name (unique, not_null, rows_sum_to, ...) or 'singular'.
+      - name: model_name
+        description: Model or source table the test is attached to (all models read, for singular tests).
+      - name: column_name
+        description: Tested column, when the test is column-level.
+      - name: severity
+        description: Configured severity (error / warn).
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["error", "warn"]}
+      - name: status
+        description: pass / warn / fail / error / skipped.
+      - name: failures
+        description: Number of failing rows returned by the test query.
+      - name: execution_time_s
+        description: Test execution time in seconds.
+      - name: message
+        description: dbt result message (truncated to 500 characters).
+      - name: logged_at
+        description: Timestamp the row was written.
+
+  - name: mart_dq_history
+    description: >
+      **Grain: one row per dbt invocation that ran tests**, summarised from the append-only
+      audit log. Use it to trend test health over time on the Data Trust dashboard.
+    columns:
+      - name: invocation_id
+        description: dbt invocation id; primary key.
+        data_tests: [unique, not_null]
+      - name: run_ts
+        description: Run start timestamp (UTC).
+        data_tests: [not_null]
+      - name: tests_total
+        description: Tests executed in the run.
+      - name: passed
+        description: Tests with status pass.
+      - name: warned
+        description: Tests with status warn (severity-warn tests that found rows).
+      - name: errored
+        description: Tests with status fail or error (severity-error tests that found rows, or crashed).
+      - name: skipped
+        description: Tests skipped because an upstream node failed.
+      - name: failing_rows
+        description: Total failing rows across non-passing tests.
+
+  - name: mart_pipeline_reconciliation
+    description: >
+      **Grain: one row per entity (statements, payments, accounts, customers).** Raw -> staged
+      -> mart row funnel with rejections broken out by defect type. Feeds the raw-to-mart funnel
+      on the Data Trust dashboard. Identity: raw_rows - rejected_rows_total = staged_rows = mart_rows.
+    data_tests:
+      - expression_is_true:
+          arguments: {expression: "raw_rows - rejected_rows_total = staged_rows"}
+      - expression_is_true:
+          arguments: {expression: "staged_rows = mart_rows"}
+    columns:
+      - name: entity
+        description: statements, payments, accounts or customers; primary key.
+        data_tests:
+          - unique
+          - accepted_values:
+              arguments: {values: ["statements", "payments", "accounts", "customers"]}
+      - name: raw_rows
+        description: Rows received in the raw extract.
+      - name: rejected_exact_duplicate
+        description: Exact duplicate statement rows removed.
+      - name: rejected_superseded_restatement
+        description: Stale statement versions replaced by a later (late-arriving) correction.
+      - name: rejected_duplicate_id
+        description: Re-delivered rows sharing an id already loaded (payment_id, account_id, customer_id).
+      - name: rejected_non_positive_amount
+        description: Payments with zero or negative amounts.
+      - name: rejected_orphan_account
+        description: Rows referencing an account_id not in the account master.
+      - name: rejected_unparseable
+        description: Rows whose key numeric fields could not be cast.
+      - name: rejected_rows_total
+        description: Sum of all rejected_* columns.
+      - name: staged_rows
+        description: Rows in the clean staging model (stg_*).
+      - name: mart_model
+        description: Mart the entity lands in.
+      - name: mart_rows
+        description: Rows in that mart.
+      - name: imputed_rows
+        description: Valid rows kept with an imputed field (null FICO refresh forward-filled).
+      - name: late_arriving_rows
+        description: Valid rows kept but flagged as late arriving.
+      - name: pct_raw_rows_in_mart
+        description: 100 * mart_rows / raw_rows.
+
+  - name: mart_dq_rejections
+    description: >
+      **Grain: source table x data-quality check.** How staging handled each defect class in
+      the current load - rejected (duplicates, superseded restatements, non-positive amounts,
+      orphans), imputed (null FICO refresh) or accepted-and-flagged (late arriving).
+    columns:
+      - name: source_table
+        description: Raw extract the check applies to.
+        data_tests: [not_null]
+      - name: dq_check
+        description: Defect class.
+        data_tests: [not_null]
+      - name: action
+        description: What staging did with the affected rows.
+      - name: affected_rows
+        description: Rows affected.
+      - name: rows_received
+        description: Total rows received in the raw extract.
+      - name: pct_of_rows_received
+        description: 100 * affected_rows / rows_received.

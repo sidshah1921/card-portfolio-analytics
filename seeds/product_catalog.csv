@@ -1,0 +1,5 @@
+product_name,product_family,target_segment,annual_fee,purchase_apr,rewards_program,rewards_rate_pct,launched_year
+Cashback,Rewards,Mass market,0,0.2399,Cash back,1.5,2016
+Travel,Rewards,Affluent travelers,95,0.2199,Travel points,2.0,2018
+Student,Starter,Students / thin file,0,0.2499,Cash back,1.0,2017
+Platinum,Premium,High income / prime+,250,0.1999,Premium points,3.0,2015

@@ -1,0 +1,52 @@
+name: dbt build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      DBT_PROFILES_DIR: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate small synthetic sample
+        run: python scripts/generate_data.py --accounts 3000 --seed 7
+
+      - name: dbt build (seed, run, test)
+        run: dbt build
+
+      - name: dbt docs generate
+        run: dbt docs generate
+
+      - name: Export marts
+        run: python scripts/export_for_tableau.py
+
+      - name: Data-quality summary
+        run: |
+          python - <<'PY'
+          import duckdb
+          con = duckdb.connect("data/warehouse.duckdb", read_only=True)
+          print(con.sql("select * from marts.mart_dq_history order by run_ts"))
+          print(con.sql("select severity, status, count(*) as tests from marts.mart_data_quality group by all order by all"))
+          print(con.sql("select entity, raw_rows, rejected_rows_total, staged_rows, mart_rows from marts.mart_pipeline_reconciliation"))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dbt-docs
+          path: |
+            target/index.html
+            target/manifest.json
+            target/catalog.json
+            target/semantic_manifest.json

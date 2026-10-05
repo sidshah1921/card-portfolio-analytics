@@ -1,0 +1,10 @@
+version: 2
+data_tests:
+  - name: assert_no_dq_leakage_into_marts
+    description: Rejected / superseded raw records never reach the marts; fact row count equals valid statements.
+  - name: assert_charge_off_is_terminal_at_180_dpd
+    description: Charge-off occurs at exactly 180 DPD and is the account's last statement.
+  - name: assert_payments_reconcile_to_statements
+    description: Cycle payment transactions sum to the statement payment_amount (warn).
+  - name: assert_portfolio_dpd30_rate_in_expected_range
+    description: Monthly portfolio 30+ DPD rate stays within 1%-8% (warn).
